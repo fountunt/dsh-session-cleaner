@@ -6,10 +6,12 @@
 //
 // The row ⋮ menu is rendered by the upstream ui-workspace component with a
 // hardcoded item list and no public slot, so the client half augments the
-// opened menu in the DOM: it watches for [role="menu"], pairs it with its
-// session row ([role="treeitem"], with a click-capture fallback), resolves the
-// session id by matching the row title against the session list, and appends a
-// danger-styled delete item. Ambiguous titles skip injection for safety.
+// opened menu in the DOM: it watches for [role="menu"] and pairs it STRICTLY
+// with the session row that was just clicked ([role="treeitem"]). A menu that
+// opens anywhere else (the "+" button, model pickers, context menus, …) is
+// never paired, so the delete item can only ever appear on conversation rows.
+// The session id is resolved by matching the row title against the session
+// list; ambiguous titles skip injection for safety.
 window.__ModuleLoader__.load({
 	id: "dsh-session-cleaner",
 	factory: (require) => {
@@ -167,22 +169,62 @@ window.__ModuleLoader__.load({
 
 		/** Install the ⋮ menu augmentation. */
 		function installRowMenuAugmentation(ctx) {
-			// Last row whose ⋮ was clicked (fallback pairing for portaled menus).
-			let lastRow = null;
+			// Strict one-shot pairing: the delete item may only ever appear in
+			// the ⋮ menu of a session row. The previous "last row" fallback
+			// kept a stale row around forever, which leaked the item into
+			// every other menu on the page ("+", model pickers, …) — gone.
+			const PAIR_WINDOW_MS = 800;
+			let pendingRow = null;
+			let pendingUntil = 0;
+
+			// Capture phase: remember the row that was just clicked, before
+			// the menu opens. Clicks outside a session row never create a
+			// pending pairing.
 			document.addEventListener("click", (event) => {
 				const target = event.target;
 				if (target instanceof Element) {
 					const row = target.closest('[role="treeitem"]');
-					if (row !== null) lastRow = row;
+					if (row !== null) {
+						pendingRow = row;
+						pendingUntil = Date.now() + PAIR_WINDOW_MS;
+					}
 				}
 			}, true);
 
+			/**
+			 * A portaled menu (no treeitem ancestor) may use the pending row
+			 * only when all of these hold: the click was recent, the row is
+			 * still in the document, and — if the row exposes aria-haspopup
+			 * triggers — one of them is currently expanded.
+			 */
+			function pendingRowAcceptsMenu(rowEl, now) {
+				if (now > pendingUntil) return false;
+				if (!document.contains(rowEl)) return false;
+				const triggers = rowEl.querySelectorAll("[aria-haspopup]");
+				if (triggers.length === 0) return true; // unknown markup: rely on the window
+				for (const trigger of triggers) {
+					if (trigger.getAttribute("aria-expanded") === "true") return true;
+				}
+				return false;
+			}
+
 			const maybeAugment = (menuEl) => {
-				const rowEl = menuEl.closest('[role="treeitem"]') ?? lastRow;
+				const now = Date.now();
+				let rowEl = menuEl.closest('[role="treeitem"]');
+				if (rowEl === null) {
+					// Portaled menu: pair only with a fresh, still-open row click.
+					if (pendingRow !== null && pendingRowAcceptsMenu(pendingRow, now)) {
+						rowEl = pendingRow;
+					}
+				}
 				if (rowEl === null) {
 					log("menu without row", menuEl);
 					return;
 				}
+				// One-shot: a pairing is consumed immediately and can never
+				// leak into a later menu.
+				pendingRow = null;
+				pendingUntil = 0;
 				fetchSessionCatalog()
 					.then((c) => augmentMenu(menuEl, rowEl, c, ctx))
 					.catch((error) => log("catalog failed:", String(error?.message ?? error)));
