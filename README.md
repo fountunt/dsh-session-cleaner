@@ -22,16 +22,18 @@ Then restart `dsh web` (a running instance does not hot-load new bundles).
 
 ## Usage
 
-### Web UI (v0.2.0+)
+### Web UI (v0.2.1+)
 
-The client half adds two ways to delete a session from the UI:
+The client half adds a **🗑 "Delete session" item** at the bottom of the
+sidebar session row ⋮ menu — the item is skipped when the row title is
+ambiguous.
 
-- a **🗑 delete button** in the conversation header action area (v0.2.0);
-- a **🗑 "Delete session" item** at the bottom of the sidebar session row
-  ⋮ menu (v0.2.1) — the item is skipped when the row title is ambiguous.
+> Note: the v0.2.0 delete button in the conversation **header action area**
+> was removed — session deletion belongs in the sidebar session list only,
+> not mixed into the header permission/model controls.
 
 Click, confirm, and the session is deleted and the sidebar refreshes. The
-button is disabled while the session is running, and sessions with an
+item is disabled while the session is running, and sessions with an
 attached agent are refused by the server — the current conversation can never
 be deleted.
 
