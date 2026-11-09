@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "Session cleaner",
+    "description": "Deletes a session from the sidebar ⋮ menu, including its live state, workspace record, and on-disk log."
+  }
+}

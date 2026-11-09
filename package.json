@@ -1,24 +1,28 @@
 {
   "name": "dsh-session-cleaner",
-  "description": "Delete DeepSeek Harness sessions from the running web runtime: live store detach, workspace records, and on-disk artifacts.",
-  "version": "1.0.2",
+  "description": "Delete DeepSeek Harness sessions from the running web UI: live store detach, workspace records, and on-disk artifacts.",
+  "version": "2.0.0",
   "type": "module",
   "main": "lib/index.js",
   "exports": {
     ".": "./lib/index.js",
     "./client": "./client.js",
+    "./locale/*.json": "./locale/*.json",
+    "./icon": "./icon.svg",
     "./package.json": "./package.json"
   },
   "files": [
     "lib",
     "client.js",
     "cordis.patch.yml",
+    "locale/*.json",
+    "icon.svg",
     "README.md",
     "README.zh.md",
     "LICENSE"
   ],
   "scripts": {
-    "test": "node --test test/"
+    "test": "node --test \"test/*.test.js\""
   },
   "keywords": [
     "deepseek-harness",
@@ -38,7 +42,7 @@
   },
   "homepage": "https://github.com/fountunt/dsh-session-cleaner",
   "peerDependencies": {
-    "@deepseek-ai/cordis": "^4.0.1"
+    "@deepseek-ai/cordis": "~4.1.0"
   },
   "dsh": {
     "bundle": {
@@ -47,9 +51,8 @@
     "client": {
       "platform": "web",
       "inject": [
-        "@deepseek-ai/dsh-client-runtime",
         "@deepseek-ai/dsh-client-locale",
-        "@deepseek-ai/dsh-client-ui-conversation"
+        "@deepseek-ai/dsh-client-ui-workspace"
       ]
     }
   }

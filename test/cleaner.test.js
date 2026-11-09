@@ -4,7 +4,14 @@ import assert from "node:assert/strict";
 import { mkdtemp, mkdir, rm, writeFile, readdir } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { detachLiveStore, detachWorkspaces, disposeAgentFiber, removeArtifacts } from "../lib/index.js";
+import {
+  artifactDirs,
+  detachLiveStore,
+  detachWorkspaces,
+  disposeAgentFiber,
+  removeArtifacts,
+  sameOrigin,
+} from "../lib/index.js";
 
 test("disposeAgentFiber unloads the agent fiber (sync and async)", async () => {
   let syncUnloaded = false;
@@ -37,6 +44,7 @@ test("detachLiveStore calls the entry detach disposer", () => {
   assert.equal(detached, true);
   assert.equal(detachLiveStore(sessions, "session-missing"), false);
   assert.equal(detachLiveStore(undefined, "session-a"), false);
+  assert.equal(detachLiveStore({}, "session-a"), false);
 });
 
 test("detachWorkspaces uses the sessionIds getter and detachSession", async () => {
@@ -59,12 +67,46 @@ test("detachWorkspaces uses the sessionIds getter and detachSession", async () =
   assert.equal(await detachWorkspaces(undefined, "session-a"), 0);
 });
 
+test("artifactDirs prefers the persistence location and scans the session root", async () => {
+  const root = await mkdtemp(join(tmpdir(), "dsh-cleaner-test-"));
+  const prev = process.env.DSH_HOME;
+  process.env.DSH_HOME = root;
+  try {
+    await mkdir(join(root, "sessions", "--test--", "session-a"), { recursive: true });
+    const persistence = {
+      async stat(id) {
+        if (id !== "session-a") return undefined;
+        return {
+          header: { id },
+          revision: "r1",
+          location: {
+            kind: "jsonl",
+            path: join(root, "sessions", "--other--", "session-a", "session.v4.jsonl.zstd"),
+          },
+        };
+      },
+    };
+    const dirs = await artifactDirs("session-a", persistence);
+    assert.equal(dirs.length, 2);
+    assert.ok(dirs.includes(join(root, "sessions", "--test--", "session-a")));
+    assert.ok(dirs.includes(join(root, "sessions", "--other--", "session-a")));
+    // a stat failure must not break the scan
+    const failing = { stat: async () => { throw new Error("boom"); } };
+    const fallback = await artifactDirs("session-a", failing);
+    assert.deepEqual(fallback, [join(root, "sessions", "--test--", "session-a")]);
+  } finally {
+    if (prev === undefined) delete process.env.DSH_HOME;
+    else process.env.DSH_HOME = prev;
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("removeArtifacts deletes only the matching session directory", async () => {
   const root = await mkdtemp(join(tmpdir(), "dsh-cleaner-test-"));
   const proj = join(root, "sessions", "--test--");
   await mkdir(join(proj, "session-keep"), { recursive: true });
   await mkdir(join(proj, "session-delete"), { recursive: true });
-  await writeFile(join(proj, "session-delete", "session.jsonl.zstd"), "x");
+  await writeFile(join(proj, "session-delete", "session.v4.jsonl.zstd"), "x");
 
   // point the module at the temp root
   const prev = process.env.DSH_HOME;
@@ -80,4 +122,40 @@ test("removeArtifacts deletes only the matching session directory", async () => 
     else process.env.DSH_HOME = prev;
     await rm(root, { recursive: true, force: true });
   }
+});
+
+test("removeArtifacts never recurses outside the session's own directory", async () => {
+  const root = await mkdtemp(join(tmpdir(), "dsh-cleaner-test-"));
+  const prev = process.env.DSH_HOME;
+  process.env.DSH_HOME = root;
+  try {
+    // A bogus persistence location pointing at a directory whose basename is
+    // not the session id must be ignored.
+    const victim = join(root, "sessions", "--test--", "session-victim");
+    await mkdir(victim, { recursive: true });
+    const persistence = {
+      async stat() {
+        return { location: { kind: "jsonl", path: join(victim, "session.v4.jsonl.zstd") } };
+      },
+    };
+    assert.equal(await removeArtifacts("session-other", persistence), 0);
+    assert.deepEqual(await readdir(join(root, "sessions", "--test--")), ["session-victim"]);
+  } finally {
+    if (prev === undefined) delete process.env.DSH_HOME;
+    else process.env.DSH_HOME = prev;
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("sameOrigin accepts same-host and header-less requests, rejects cross-site", () => {
+  assert.equal(sameOrigin({ headers: { host: "127.0.0.1:3080" } }), true);
+  assert.equal(
+    sameOrigin({ headers: { host: "127.0.0.1:3080", origin: "http://127.0.0.1:3080" } }),
+    true,
+  );
+  assert.equal(
+    sameOrigin({ headers: { host: "127.0.0.1:3080", origin: "https://evil.example" } }),
+    false,
+  );
+  assert.equal(sameOrigin({ headers: { host: "127.0.0.1:3080", origin: "not a url" } }), false);
 });

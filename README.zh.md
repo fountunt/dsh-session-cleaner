@@ -1,28 +1,39 @@
 # dsh-session-cleaner
 
-从**运行中的** DeepSeek Harness Web 运行时删除会话——文件、内存 live store、工作区记录，无需重启 `dsh web`。
+[English](README.md) | [中文](README.zh.md)
+
+从**运行中的** DeepSeek Harness Web 运行时删除会话——文件、内存 live store、工作区记录，无需重启宿主。
 
 官方 Web API 只有 `workspace.archiveSession`（隐藏），没有 `session.delete`。本 bundle 补上这个缺口。
+
+## 兼容性
+
+| 插件版本 | DeepSeek Harness |
+| --- | --- |
+| 2.0.0 | 0.2.2 及更新版本（基于 0.2.2-rc.1 开发与验证） |
+| 1.0.2 及更早 | 0.1.x – 0.2.1 |
+
+2.0.0 适配当前插件 API：会话行菜单已经是官方 slot（`sidebar.workspaces.session.menu.item`），客户端不再抓取 DOM，也不再使用旧的 `session.list` RPC 报文格式。
 
 ## 安装
 
 ```sh
-dsh plugin --profile web add dsh-session-cleaner            # 从 npm
-dsh plugin --profile web add github:fountunt/dsh-session-cleaner   # 从 git
+dsh plugin --profile <profile> add dsh-session-cleaner            # 从 npm
+dsh plugin --profile <profile> add github:fountunt/dsh-session-cleaner   # 从 git
 
 # 或使用本地 checkout
-dsh plugin --profile web add file:/path/to/dsh-session-cleaner
+dsh plugin --profile <profile> add file:/path/to/dsh-session-cleaner
 ```
 
-然后重启 `dsh web`（运行中的实例不会热加载新 bundle）。
+也可以在「插件管理」里直接安装本地包目录。安装后需重启宿主；运行中的实例不会热加载新的宿主 bundle。
 
 ## 使用
 
-### Web UI（v1.0.0）
+### Web UI
 
-客户端部分在侧边栏会话行 **⋮ 菜单底部**添加一个 **🗑 "删除此会话"** 菜单项——标题有歧义（重名）时会话的菜单项会被跳过以保证安全。
+客户端在侧边栏会话行的 **⋮ 菜单底部**添加 **🗑「删除此会话」**。会话正在运行、或该对话正在主视图打开时，菜单项为灰色禁用状态。
 
-点击确认后，会话被删除并刷新侧边栏。会话运行时菜单项为灰色禁用状态；在 UI 打开过的会话（挂着空闲 agent）会先自动停止再删除。当前正在运行的对话永远无法被删除。
+点击、确认后，会话被删除并刷新侧边栏。之前在 UI 中打开过的会话（挂着空闲 agent）会先被停掉，再删除。
 
 ### API
 
@@ -45,31 +56,41 @@ await fetch("/api-ext/session.delete", {
 }).then(r => r.json());
 ```
 
-响应格式（与宿主 RPC 风格一致）：
+响应格式：
 
 ```json
-{ "ok": true, "value": { "detached": true, "workspaces": 1, "files": 1 } }
+{ "ok": true, "value": { "detached": true, "agentDisposed": false, "workspaces": 1, "files": 1 } }
 { "ok": false, "error": { "code": "refused", "message": "..." } }
+{ "ok": false, "error": { "code": "not-found", "message": "..." } }
 ```
 
-- `detached` — 会话已从内存 live store 移除（这就是它立刻从侧边栏消失、无需重启的原因）。
+- `detached` — 会话原本在 live store 中，现已被移除（这就是它立刻从侧边栏消失、无需重启的原因）。
+- `agentDisposed` — 删除文件前卸载了一个空闲 agent。
 - `workspaces` — 从多少个工作区记录中摘除了该会话。
 - `files` — 删除了多少个磁盘上的会话目录。
 
+带有其它宿主 `Origin` 头的请求会被拒绝（`403 forbidden`）；不带该头的调用（curl、CLI）照常接受。
+
 ## 安全性
 
-- 有 agent 附着（运行中或空闲）的会话会被**拒绝**——当前对话永远无法通过此端点删除。
-- 删除不可逆：文件、工作区成员关系、live 条目都会被移除。session-projection 缓存可能保留一条无害的过期记录，直到下次重启。
+- agent 正在**运行**的会话会被**拒绝**——绝不打断正在执行的回合，UI 中该行菜单项保持禁用。
+- 空闲 agent（会话在 UI 中打开过）会先通过它自己的 fiber 卸载，保证持久化写入端在文件消失前关闭。
+- 删除不可逆：文件、工作区成员关系、live 条目都会被移除。派生投影缓存（`$DSH_HOME/storages/session_projcache`）可能保留一条无害的过期记录，它只会被仍存在日志的会话读取。
 
 ## 工作原理
 
-`session.list` 由 live `SessionStore` 加磁盘扫描共同提供。冷会话在列出时会被*准备进 live store*，因此文件删除后它们会以"幽灵"形式残留到服务器重启。本插件移除 live 条目（走 store 自身的 detach 通道）、从工作区记录摘除会话，并删除磁盘上的会话目录——让该行立即、永久消失。
+`session.list` 由 live `SessionStore` 加磁盘扫描共同提供，所以仅删除日志会让该行以「幽灵」形式残留到宿主重启。宿主端依次：
+
+1. 卸载空闲 agent 的 fiber（有序拆除 agent、持久化写入端与会话挂载）；
+2. 将会话从 live `SessionStore` 中 detach（走 store 自身的 detach 入口）；
+3. 从每个工作区记录中摘除会话 id（`detachSession`）；
+4. 删除会话的磁盘目录——优先使用 `ctx.sessionPersistence.stat(id).location.path`，取不到时回退到 `$DSH_HOME/sessions/*/<sessionId>` 扫描。
 
 ## 开发
 
 ```sh
-pnpm install        # peer: @deepseek-ai/cordis
-node --test test/   # 单元测试
+pnpm install                     # peer: @deepseek-ai/cordis ~4.1
+node --test "test/*.test.js"     # 单元测试
 ```
 
 ## 许可证
